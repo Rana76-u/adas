@@ -42,7 +42,12 @@ class NativeDetectionBridge {
   }
 
   Future<void> dispose() async {
-    await _method.invokeMethod<bool>('dispose');
+    try {
+      await _method.invokeMethod<bool>('dispose');
+    } catch (e) {
+      // Ignore errors during dispose - the activity may already be destroyed
+      print('NativeDetectionBridge dispose error (non-critical): $e');
+    }
     _stream = null;
   }
 

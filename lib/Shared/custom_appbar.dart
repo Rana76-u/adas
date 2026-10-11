@@ -6,12 +6,14 @@ class CustomAppbar extends StatelessWidget implements PreferredSizeWidget{
   final bool _modelLoaded;
   final ModelConfig? _selectedModel;
   final ValueChanged<ModelConfig>? onModelChanged;
+  final bool isSwitchingModel;
 
   const CustomAppbar({
     super.key,
     required bool modelLoaded,
     required ModelConfig? selectedModel,
     this.onModelChanged,
+    this.isSwitchingModel = false,
   }) : _modelLoaded = modelLoaded,
        _selectedModel = selectedModel;
 
@@ -72,7 +74,7 @@ class CustomAppbar extends StatelessWidget implements PreferredSizeWidget{
                       ),
                     );
                   }).toList(),
-                  onChanged: _modelLoaded && onModelChanged != null
+                  onChanged: _modelLoaded && onModelChanged != null && !isSwitchingModel
                       ? (newModel) {
                           if (newModel != null) {
                             onModelChanged!(newModel);

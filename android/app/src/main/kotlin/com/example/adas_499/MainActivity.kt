@@ -25,6 +25,7 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.max
 import kotlin.math.min
 
@@ -45,6 +46,9 @@ class MainActivity : FlutterActivity() {
 
         // EMA smoothing factor for FPS — must be in companion to use const val
         private const val EMA_ALPHA            = 0.1
+
+        // Lock to synchronize model loading and inference
+        private val modelLock = ReentrantLock()
     }
 
     // ── Channels ──────────────────────────────────────────────────────────────
@@ -171,65 +175,78 @@ class MainActivity : FlutterActivity() {
     // Model loading
     // ─────────────────────────────────────────────────────────────────────────
     private fun loadModel(assetPath: String, labelList: List<String>, delegatePref: String) {
-        interpreter?.close();    interpreter   = null
-        gpuDelegate?.close();    gpuDelegate   = null
-        nnApiDelegate?.close();  nnApiDelegate = null
+        Log.i(TAG, "🔄 Starting model load: $assetPath")
+        modelLock.lock()
+        try {
+            Log.i(TAG, "🔒 Acquired model lock for loading")
 
-        labels     = labelList
-        numClasses = labelList.size
+            // Stop inference while loading new model
+            isRunning = false
+            Log.i(TAG, "⏸️ Stopped inference for model switch")
 
-        val modelBuffer = loadModelBuffer(assetPath)
+            interpreter?.close();    interpreter   = null
+            gpuDelegate?.close();    gpuDelegate   = null
+            nnApiDelegate?.close();  nnApiDelegate = null
 
-        val options = Interpreter.Options().apply {
-            numThreads = 2   // 2 > 4 on mobile; GPU/NNAPI ignores this anyway
-            when (delegatePref.lowercase()) {
-                "gpu" -> {
-                    val compatList = CompatibilityList()
-                    if (compatList.isDelegateSupportedOnThisDevice) {
-                        // Use plain GpuDelegate() — bestOptionsForThisDevice returns
-                        // GpuDelegateFactory.Options which is not on the classpath
-                        // with tensorflow-lite-gpu:2.x without the delegate-plugin AAR.
-                        gpuDelegate = GpuDelegate()
-                        addDelegate(gpuDelegate!!)
-                        Log.i(TAG, "✅ GPU delegate active")
-                    } else {
-                        Log.w(TAG, "⚠️ GPU not supported → NNAPI fallback")
+            labels     = labelList
+            numClasses = labelList.size
+
+            val modelBuffer = loadModelBuffer(assetPath)
+
+            val options = Interpreter.Options().apply {
+                numThreads = 2   // 2 > 4 on mobile; GPU/NNAPI ignores this anyway
+                when (delegatePref.lowercase()) {
+                    "gpu" -> {
+                        val compatList = CompatibilityList()
+                        if (compatList.isDelegateSupportedOnThisDevice) {
+                            // Use plain GpuDelegate() — bestOptionsForThisDevice returns
+                            // GpuDelegateFactory.Options which is not on the classpath
+                            // with tensorflow-lite-gpu:2.x without the delegate-plugin AAR.
+                            gpuDelegate = GpuDelegate()
+                            addDelegate(gpuDelegate!!)
+                            Log.i(TAG, "✅ GPU delegate active")
+                        } else {
+                            Log.w(TAG, "⚠️ GPU not supported → NNAPI fallback")
+                            nnApiDelegate = NnApiDelegate()
+                            addDelegate(nnApiDelegate!!)
+                        }
+                    }
+                    "nnapi" -> {
                         nnApiDelegate = NnApiDelegate()
                         addDelegate(nnApiDelegate!!)
+                        Log.i(TAG, "✅ NNAPI delegate active")
                     }
+                    else -> Log.i(TAG, "ℹ️ CPU with 2 threads")
                 }
-                "nnapi" -> {
-                    nnApiDelegate = NnApiDelegate()
-                    addDelegate(nnApiDelegate!!)
-                    Log.i(TAG, "✅ NNAPI delegate active")
-                }
-                else -> Log.i(TAG, "ℹ️ CPU with 2 threads")
             }
+
+            interpreter = Interpreter(modelBuffer, options)
+
+            val inputTensor = interpreter!!.getInputTensor(0)
+            isFloat32Model  = (inputTensor.dataType() == DataType.FLOAT32)
+            val inputShape  = inputTensor.shape()
+            // Detect layout: [1,3,H,W] = NCHW, [1,H,W,3] = NHWC
+            isNCHW = (inputShape.size == 4 && inputShape[1] == 3 && inputShape[3] == INPUT_SIZE)
+            Log.i(TAG, "Input shape: ${inputShape.contentToString()}  " +
+                "dtype=${if (isFloat32Model) "float32" else "int8/uint8"}  " +
+                "layout=${if (isNCHW) "NCHW" else "NHWC"}")
+
+            val bytesPerElem = if (isFloat32Model) 4 else 1
+            inputBuffer = ByteBuffer
+                .allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * bytesPerElem)
+                .apply { order(ByteOrder.nativeOrder()) }
+
+            outputBuffer = Array(1) { Array(4 + numClasses) { FloatArray(8400) } }
+
+            letterboxBitmap = Bitmap.createBitmap(INPUT_SIZE, INPUT_SIZE, Bitmap.Config.ARGB_8888)
+            lbCanvas        = android.graphics.Canvas(letterboxBitmap!!)
+            pixelScratch    = IntArray(INPUT_SIZE * INPUT_SIZE)
+
+            Log.i(TAG, "✅ Model ready. classes=$numClasses  float32=$isFloat32Model")
+        } finally {
+            modelLock.unlock()
+            Log.i(TAG, "🔓 Released model lock after loading")
         }
-
-        interpreter = Interpreter(modelBuffer, options)
-
-        val inputTensor = interpreter!!.getInputTensor(0)
-        isFloat32Model  = (inputTensor.dataType() == DataType.FLOAT32)
-        val inputShape  = inputTensor.shape()
-        // Detect layout: [1,3,H,W] = NCHW, [1,H,W,3] = NHWC
-        isNCHW = (inputShape.size == 4 && inputShape[1] == 3 && inputShape[3] == INPUT_SIZE)
-        Log.i(TAG, "Input shape: ${inputShape.contentToString()}  " +
-            "dtype=${if (isFloat32Model) "float32" else "int8/uint8"}  " +
-            "layout=${if (isNCHW) "NCHW" else "NHWC"}")
-
-        val bytesPerElem = if (isFloat32Model) 4 else 1
-        inputBuffer = ByteBuffer
-            .allocateDirect(INPUT_SIZE * INPUT_SIZE * 3 * bytesPerElem)
-            .apply { order(ByteOrder.nativeOrder()) }
-
-        outputBuffer = Array(1) { Array(4 + numClasses) { FloatArray(8400) } }
-
-        letterboxBitmap = Bitmap.createBitmap(INPUT_SIZE, INPUT_SIZE, Bitmap.Config.ARGB_8888)
-        lbCanvas        = android.graphics.Canvas(letterboxBitmap!!)
-        pixelScratch    = IntArray(INPUT_SIZE * INPUT_SIZE)
-
-        Log.i(TAG, "✅ Model ready. classes=$numClasses  float32=$isFloat32Model")
     }
 
     private fun loadModelBuffer(assetPath: String): java.nio.MappedByteBuffer {
@@ -315,6 +332,15 @@ class MainActivity : FlutterActivity() {
     // Frame processing  (runs on dedicated cameraExecutor thread)
     // ─────────────────────────────────────────────────────────────────────────
     private fun processFrame(imageProxy: ImageProxy) {
+        // Try to acquire lock with a short timeout to avoid blocking indefinitely
+        // If lock is held (model loading), drop this frame instead of crashing
+        if (!modelLock.tryLock(10L, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            Log.d(TAG, "⏭️ Frame dropped: model lock not available (model switching)")
+            imageProxy.close()
+            frameReady = true
+            return
+        }
+
         try {
             val t0 = System.currentTimeMillis()
 
@@ -329,43 +355,51 @@ class MainActivity : FlutterActivity() {
             fillInputBuffer(letterboxBitmap!!)
 
             // 4. Run inference
-            val out = outputBuffer!!
-            for (row in out[0]) row.fill(0f)
-            interpreter!!.run(inputBuffer!!, out)
+            val out = outputBuffer
+            val localInterpreter = interpreter
+            val localInputBuffer = inputBuffer
 
-            // 5. Determine original display dimensions after rotation
-            val srcW = if (rotation % 180 == 0) imageProxy.width  else imageProxy.height
-            val srcH = if (rotation % 180 == 0) imageProxy.height else imageProxy.width
+            if (out == null || localInterpreter == null || localInputBuffer == null) {
+                Log.d(TAG, "⏭️ Frame dropped: interpreter/buffer null (model switching)")
+            } else {
+                for (row in out[0]) row.fill(0f)
+                localInterpreter.run(localInputBuffer, out)
 
-            // 6. Decode + NMS + multi-object tracking
-            val boxes   = decodeOutput(out[0], scale, padLeft, padTop, srcW, srcH)
-            val tracked = objectTracker.update(boxes, emaFps.coerceAtLeast(1.0))
-            val dets    = tracked.map { it.toFlutterMap() }
-            val inferMs = System.currentTimeMillis() - t0
+                // 5. Determine original display dimensions after rotation
+                val srcW = if (rotation % 180 == 0) imageProxy.width  else imageProxy.height
+                val srcH = if (rotation % 180 == 0) imageProxy.height else imageProxy.width
 
-            // 7. EMA FPS
-            val nowMs = System.currentTimeMillis()
-            if (lastFrameMs > 0L) {
-                val instantFps = 1000.0 / (nowMs - lastFrameMs).toDouble().coerceAtLeast(1.0)
-                emaFps = if (emaFps == 0.0) instantFps
-                         else EMA_ALPHA * instantFps + (1.0 - EMA_ALPHA) * emaFps
-            }
-            lastFrameMs = nowMs
+                // 6. Decode + NMS + multi-object tracking
+                val boxes   = decodeOutput(out[0], scale, padLeft, padTop, srcW, srcH)
+                val tracked = objectTracker.update(boxes, emaFps.coerceAtLeast(1.0))
+                val dets    = tracked.map { it.toFlutterMap() }
+                val inferMs = System.currentTimeMillis() - t0
 
-            // 8. Throttled send — avoids flooding Dart event loop
-            if (nowMs - lastSendMs >= MIN_SEND_INTERVAL_MS) {
-                lastSendMs = nowMs
-                val payload = mapOf(
-                    "detections" to dets,
-                    "inferMs"    to inferMs,
-                    "fps"        to emaFps)
-                runOnUiThread { eventSink?.success(payload) }
+                // 7. EMA FPS
+                val nowMs = System.currentTimeMillis()
+                if (lastFrameMs > 0L) {
+                    val instantFps = 1000.0 / (nowMs - lastFrameMs).toDouble().coerceAtLeast(1.0)
+                    emaFps = if (emaFps == 0.0) instantFps
+                             else EMA_ALPHA * instantFps + (1.0 - EMA_ALPHA) * emaFps
+                }
+                lastFrameMs = nowMs
+
+                // 8. Throttled send — avoids flooding Dart event loop
+                if (nowMs - lastSendMs >= MIN_SEND_INTERVAL_MS) {
+                    lastSendMs = nowMs
+                    val payload = mapOf(
+                        "detections" to dets,
+                        "inferMs"    to inferMs,
+                        "fps"        to emaFps)
+                    runOnUiThread { eventSink?.success(payload) }
+                }
             }
 
         } catch (e: Exception) {
             Log.e(TAG, "processFrame error: ${e.message}", e)
             runOnUiThread { eventSink?.error("INFER_ERROR", e.message, null) }
         } finally {
+            modelLock.unlock()
             imageProxy.close()
             frameReady = true
         }

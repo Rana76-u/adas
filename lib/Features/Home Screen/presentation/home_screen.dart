@@ -22,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _selectedTab = 0;
   ModelConfig _selectedModel = availableModels.first;
   ModelConfig? _previousModel;
+  bool _isSwitchingModel = false;
 
   @override
   void initState() {
@@ -51,12 +52,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _switchModel(ModelConfig newModel) async {
     if (_selectedModel == newModel) return;
+    if (_isSwitchingModel) return;
 
+    _isSwitchingModel = true;
     _previousModel = _selectedModel;
     final wasInferenceOn = _isInferenceOn;
 
     if (_isInferenceOn) {
       setState(() => _isInferenceOn = false);
+      await _bridge.stopCamera();
     }
 
     setState(() {
@@ -77,7 +81,12 @@ class _HomeScreenState extends State<HomeScreen> {
         _loadError = 'Failed to load ${newModel.name}. Reverted to ${_previousModel!.name}';
       });
       await _loadModel();
+      if (wasInferenceOn && mounted) {
+        setState(() => _isInferenceOn = true);
+      }
     }
+
+    _isSwitchingModel = false;
   }
 
   @override
@@ -99,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   modelLoaded: _modelLoaded,
                   selectedModel: _selectedModel,
                   onModelChanged: _modelLoaded ? _switchModel : null,
+                  isSwitchingModel: _isSwitchingModel,
                 ) as PreferredSizeWidget,
       body: isLandscape ? _buildLandscapeLayout() : _buildBody(),
       bottomNavigationBar: isLandscape ? null : _buildBottomNavigationBar(),
@@ -206,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Tooltip(
       message: 'Select Model',
       child: InkWell(
-        onTap: _modelLoaded ? () => _showModelSelectorBottomSheet() : null,
+        onTap: _modelLoaded && !_isSwitchingModel ? () => _showModelSelectorBottomSheet() : null,
         borderRadius: BorderRadius.circular(14),
         child: Container(
           width: 48,
@@ -216,10 +226,19 @@ class _HomeScreenState extends State<HomeScreen> {
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: Colors.white24),
           ),
-          child: Icon(
-            Icons.model_training,
-            color: _modelLoaded ? Colors.white70 : Colors.white38,
-          ),
+          child: _isSwitchingModel
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white70,
+                  ),
+                )
+              : Icon(
+                  Icons.model_training,
+                  color: _modelLoaded ? Colors.white70 : Colors.white38,
+                ),
         ),
       ),
     );
@@ -244,23 +263,35 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ),
-            ...availableModels.map((model) => ListTile(
-              title: Text(
-                model.name,
-                style: TextStyle(
-                  color: _selectedModel == model
-                      ? const Color(0xFF1A73E8)
-                      : Colors.white,
-                ),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: availableModels.length,
+                itemBuilder: (context, index) {
+                  final model = availableModels[index];
+                  final isSelected = _selectedModel == model;
+                  return ListTile(
+                    title: Text(
+                      model.name,
+                      style: TextStyle(
+                        color: isSelected
+                            ? const Color(0xFF1A73E8)
+                            : Colors.white,
+                      ),
+                    ),
+                    trailing: isSelected
+                        ? const Icon(Icons.check, color: Color(0xFF1A73E8))
+                        : null,
+                    onTap: _isSwitchingModel
+                        ? null
+                        : () {
+                            Navigator.pop(context);
+                            _switchModel(model);
+                          },
+                  );
+                },
               ),
-              trailing: _selectedModel == model
-                  ? const Icon(Icons.check, color: Color(0xFF1A73E8))
-                  : null,
-              onTap: () {
-                Navigator.pop(context);
-                _switchModel(model);
-              },
-            )),
+            ),
             const SizedBox(height: 16),
           ],
         ),

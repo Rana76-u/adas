@@ -18,15 +18,45 @@ class ModelConfig {
 /// List of available models for selection.
 /// Add new models here as they become available in assets/models/.
 final List<ModelConfig> availableModels = [
-  ModelConfig(
-      name: 'YOLOv9t_best',
-      modelPath: 'assets/models/best.tflite',
+    ModelConfig(
+      name: 'YOLOv5n',
+      modelPath: 'assets/models/best_5n.tflite',
       labels: customLabels,
       delegate: 'gpu',
     ),
     ModelConfig(
       name: 'YOLOv8n',
-      modelPath: 'assets/models/best_float32_kaggle.tflite',
+      modelPath: 'assets/models/best_8n.tflite',
+      labels: customLabels,
+      delegate: 'gpu',
+    ),
+    ModelConfig(
+      name: 'YOLOv9t',
+      modelPath: 'assets/models/best_9t.tflite',
+      labels: customLabels,
+      delegate: 'gpu',
+    ),
+    ModelConfig(
+      name: 'YOLOv10n',
+      modelPath: 'assets/models/best_10n.tflite',
+      labels: customLabels,
+      delegate: 'gpu',
+    ),
+    ModelConfig(
+      name: 'YOLOv11n',
+      modelPath: 'assets/models/best_11n.tflite',
+      labels: customLabels,
+      delegate: 'gpu',
+    ),
+    ModelConfig(
+      name: 'YOLOv12n',
+      modelPath: 'assets/models/best_12n.tflite',
+      labels: customLabels,
+      delegate: 'gpu',
+    ),
+    ModelConfig(
+      name: 'YOLOv26n',
+      modelPath: 'assets/models/best_26n.tflite',
       labels: customLabels,
       delegate: 'gpu',
     ),
